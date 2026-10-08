@@ -10,7 +10,7 @@ degradation, and async history settlement.
 
 ```
 client ──► gateway(auth · rate-limit · quota · cache · breaker) ──► Redis Stream ──► GPU workers(batched)
-                 │                                                     │                    │
+                 │                                                      │                    │
                  └── SSE tokens ◄──── Pub/Sub ◄─────────────────────────┴────────────────────┘
                  │
                  └──► settlement service ──► history (eventual) + billing ledger (strict)
