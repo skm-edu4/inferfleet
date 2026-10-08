@@ -1,0 +1,76 @@
+name: inferfleet
+
+x-common: &common
+  build: .
+  environment: &env
+    IF_MODE: redis
+    IF_INLINE: "false"
+    IF_AUTO_SEED: "true"
+    DATABASE_URL: postgresql+psycopg2://inferfleet:inferfleet@postgres:5432/inferfleet
+    REDIS_URL: redis://redis:6379/0
+    IF_BATCH_SIZE: "16"
+    IF_BATCH_WAIT_MS: "20"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+        condition: service_healthy
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: inferfleet
+      POSTGRES_PASSWORD: inferfleet
+      POSTGRES_DB: inferfleet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inferfleet"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  gateway:
+    <<: *common
+    command: ["uvicorn", "inferfleet.gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+
+  worker:
+    <<: *common
+    command: ["python", "-m", "inferfleet.worker"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  history:
+    <<: *common
+    command: ["python", "-m", "inferfleet.history"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
