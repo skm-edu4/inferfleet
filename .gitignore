@@ -1,15 +1,94 @@
+# ---- python ----
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---- virtual environments ----
 .venv/
 venv/
+env/
+ENV/
+.env/
+virtualenv/
+
+# ---- env files & secrets (keep the example template) ----
 .env
-*.egg-info/
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# ---- test / lint / coverage / type caches ----
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.tox/
+.nox/
 .coverage
+.coverage.*
+coverage.xml
+coverage/
 htmlcov/
-data/*.db
-data/*.sqlite3
-data/*.sqlite3-*
+junit*.xml
+.hypothesis/
+
+# ---- runtime data (databases, seeds, uploads) ----
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.ldb
+
+# ---- logs ----
 *.log
+logs/
+nohup.out
+
+# ---- editors & OS ----
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# ---- notebooks / local scratch ----
+.ipynb_checkpoints/
+scratch/
+tmp/
+
+# ---- private interview prep (never committed, never pushed) ----
+INTERVIEW_PREP.md
+PRIVATE_*.md
+*.private.md
