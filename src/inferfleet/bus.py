@@ -267,12 +267,14 @@ class RedisBus(Bus):
         self, stream: str, consumer: str, count: int, block_ms: int
     ) -> list[tuple[Handle, dict]]:
         await self._ensure_group(stream)
+        # NOTE: in Redis, `BLOCK 0` means "block forever" — a non-blocking poll
+        # (used for continuous admission between decode steps) must omit BLOCK.
         rows = await self._redis.xreadgroup(
             "workers",
             consumer,
             {stream: ">"},
             count=count,
-            block=block_ms,
+            block=None if block_ms <= 0 else block_ms,
         )
         out: list[tuple[Handle, dict]] = []
         for _stream_name, messages in rows or []:

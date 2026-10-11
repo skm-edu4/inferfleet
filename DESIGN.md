@@ -253,25 +253,32 @@ fan out over Redis Pub/Sub on channel `gen:{request_id}` — one publish, many g
 subscribers — straight into the client's SSE connection. Sync clients still get the
 full JSON when `done` arrives.
 
-**2. Dynamic batching packs the GPU.**
+**2. Dynamic batching packs the GPU — with iteration-level (continuous) admission.**
 One forward pass over a batch of 16 prompts costs almost the same as one pass over a
 single prompt. The worker therefore doesn't process jobs one at a time:
 
 ```
-claim(batch ≤ 16)
-wait for first job  ──► batch window opens (≤ 20 ms) ──► fill from queue
-                              │
-                              ▼
-        for step in range(max_len):          # lockstep across the batch
-            publish next token for each live request
-            sleep(~18 ms)                     # one "GPU step"
+claim(batch ≤ 16)                      # first job opens the ≤ 20 ms fill window
+loop, per decode step:                 # iteration-level scheduling (vLLM-style)
+    ADMIT     ── non-blocking claim for any free slots (batch < 16?)
+                (skipped once shutdown begins: drain, don't admit)
+    DECODE    ── one token for every live request   # one "GPU step", ~18 ms
+    RETIRE    ── requests that hit their end-of-sample publish done, ack,
+                and free their slot for a waiting job
 ```
 
 Consequences you can point at in code:
 - At low traffic, batch = 1 → latency stays minimal (the window is bounded by 20 ms).
 - At peak, batch = 16 → **~16× tokens per GPU second** for the same wall-clock step.
 - The window *starts at the first arrival*, so an idle fleet never adds delay.
-- Metrics: `inferfleet_batch_size` histogram, `inferfleet_gpu_utilization` gauge.
+- Because completion times are ragged (requests stop at different steps), slots
+  free **mid-batch** — and `IF_SCHEDULER=continuous` refills them on the next
+  step, while the `static` fallback runs each batch to completion first
+  (kept as an A/B baseline). Measured on an identical workload: **+34 % throughput,
+  −35 % p99, −41 % admission wait** ([BENCHMARKS.md](BENCHMARKS.md)).
+- Metrics: `inferfleet_batch_size` histogram (per-step occupancy),
+  `inferfleet_gpu_utilization`, `inferfleet_batch_admissions_total{kind=cold|warm}`,
+  `inferfleet_admission_wait_seconds` (queue → GPU).
 
 **3. Queuing smooths spikes.**
 Jobs land on a Redis Stream (`q:jobs`). Workers **pull** with `XREADGROUP` — this is
@@ -318,6 +325,18 @@ our scheduling layer. Listed in Future Improvements.
 
 **Statelessness = horizontal scale.** Gateways hold zero durable state (cache index
 is a warm optimization, rate limits live in Redis). `docker compose up --scale worker=N`.
+
+**Measured performance (reproducible — see [BENCHMARKS.md](BENCHMARKS.md)).**
+A load generator (`inferfleet.loadgen`, closed- and open-loop, seeded workloads)
+drives the all-in-one deployment and scrapes `/metrics` before/after each run:
+- Continuous vs static batching, identical 400-request workload (both runs generated
+  exactly 17,205 tokens): **14.3 → 19.2 req/s (+34 %)**, p99 **3,164 → 2,058 ms**,
+  batch occupancy **11.7 → 15.6/16**, **25 % fewer GPU steps** for the same work.
+- Load sweep: GPU capacity ≈ 18–19 req/s (92 % of the theoretical 20.8) and it
+  **plateaus rather than collapses** across a 12× overload range — the 120 rps run
+  still completes 16.3 req/s while shedding/timeouts happen at the edge.
+- Hot cache (82.8 % hit rate) at 40 rps offered: p50 **2.2 ms** (vs 6.05 s uncached
+  at the same offered load) and **−64 % GPU token work**.
 
 ### 3.6 Failure handling
 
@@ -398,6 +417,8 @@ independently — and what makes the failure table above implementable in ~50 li
 | `inferfleet_circuit_state` | gauge | != CLOSED (page: fleet degraded) |
 | `inferfleet_requests_total{status}` | counter | 5xx rate > 0.1 % over 5 min; 503 (shed) > 1 % |
 | `inferfleet_batch_size` (p50) | histogram | p50 = 1 during peak → batching is broken |
+| `inferfleet_admission_wait_seconds` (p99) | histogram | p99 climbing while occupancy < 12 → admission policy regression |
+| `inferfleet_batch_admissions_total{kind="warm"}` | counter | warm share → 0 under load → workers are draining batches instead of refilling (continuous batching off?) |
 | `inferfleet_cache_hits_total{kind}` | counter | semantic hit-rate collapse → embedding/index regression |
 | `inferfleet_quota_rejected_total` | counter | spike → tier/pricing issue, not a system issue |
 | SLO: availability = `2xx+4xx / total` | derived | burn-rate alerting on 99.99 % budget |
@@ -408,8 +429,9 @@ in Datadog/LangSmith-style tooling.
 
 ### 4.4 Future improvements (6 months, unlimited budget)
 
-1. **Real runtime integration** — vLLM/TensorRT-LLM behind `engine.plan()`; continuous
-   batching, paged KV-cache, prefix caching for shared system prompts.
+1. **Real runtime integration** — vLLM/TensorRT-LLM behind `engine.plan()` (our
+   scheduler already does iteration-level admission; paged KV-cache and cross-request
+   prefix caching live in the runtime layer below us).
 2. **Multi-region active-active** — regional gateway pools, geo-DNS, region-local
    caches; ledger stays single-region (strict consistency is easier to keep linearizable
    in one write region with async replication).
@@ -438,9 +460,13 @@ in Datadog/LangSmith-style tooling.
 | Timeouts refund reservations | `test_timeout_refunds_reservation` |
 | Queue shedding protects the fleet | `test_queue_shedding` |
 | Worker crash = clean failure, not a hung client | `test_crashed_worker_eventually_fails_cleanly` |
+| Jobs join a *running* GPU batch (continuous admission) | `test_continuous_admission_joins_running_batch` |
+| Static scheduler never admits mid-batch (A/B switch is real) | `test_static_scheduler_never_warm_admits` |
+| Queue→GPU wait is measured per admission | `test_admission_wait_histogram_recorded` |
+| Load generator runs a full closed-loop workload in-process | `test_loadgen_smoke` |
 | Broker semantics (FIFO, redelivery attempts, pre-buffered fan-out) | `tests/test_bus.py` (8 tests) |
 
-**34 tests, all passing:** `make test`.
+**39 tests, all passing:** `make test`. Benchmark harness: `make bench`.
 
 ---
 

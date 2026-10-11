@@ -88,6 +88,9 @@ Desktop.ini
 scratch/
 tmp/
 
+# ---- benchmark artifacts: keep result JSONs (evidence), drop server logs ----
+results/*.server.log
+
 # ---- private interview prep (never committed, never pushed) ----
 INTERVIEW_PREP.md
 PRIVATE_*.md

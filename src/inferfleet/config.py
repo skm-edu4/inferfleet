@@ -55,6 +55,10 @@ class Settings:
     batch_wait_ms: int = 20
     job_timeout_s: float = 30.0
     ttfb_budget_ms: int = 300
+    # GPU admission policy: "continuous" (vLLM-style iteration-level scheduling,
+    # jobs join a running batch between decode steps) or "static" (fixed batch
+    # runs to completion — kept as an ablation baseline for benchmarks).
+    scheduler: str = "continuous"
 
     cache_ttl_s: int = 900
     semantic_threshold: float = 0.90
@@ -97,6 +101,9 @@ def load_settings() -> Settings:
         inline = True
     else:
         inline = False
+    scheduler = os.getenv("IF_SCHEDULER", "continuous").strip().lower()
+    if scheduler not in {"continuous", "static"}:
+        scheduler = "continuous"
     return Settings(
         mode=mode,
         service=os.getenv("IF_SERVICE", "gateway"),
@@ -112,6 +119,7 @@ def load_settings() -> Settings:
         failure_rate=min(1.0, max(0.0, _float("IF_FAILURE_RATE", 0.0))),
         auto_seed=_bool("IF_AUTO_SEED", "true"),
         inline_workers=inline,
+        scheduler=scheduler,
         rate_limits=rate_limits,
         monthly_quotas=quotas,
     )

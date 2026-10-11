@@ -38,7 +38,14 @@ def _rng(prompt: str) -> random.Random:
 
 
 def plan(prompt: str, max_tokens: int) -> list[str]:
-    """Deterministic mock completion, tokenized as whitespace words."""
+    """Deterministic mock completion, tokenized as whitespace words.
+
+    Completion length is intentionally ragged: each prompt stops at a
+    deterministic fraction (40–100%) of ``max_tokens``, mimicking variable
+    end-of-sample times. Uniform lengths would let a whole batch retire on the
+    same step, which hides the entire point of continuous batching — ragged
+    finishes are what free slots mid-run so waiting jobs can be admitted.
+    """
     rng = _rng(prompt)
     words = prompt.split()
     topic = " ".join(words[:6]) if words else "your question"
@@ -51,7 +58,8 @@ def plan(prompt: str, max_tokens: int) -> list[str]:
     tokens: list[str] = []
     for line in lines:
         tokens.extend(line.split())
-    if len(tokens) > max_tokens:
-        tokens = tokens[:max_tokens]
+    target = max(4, int(max_tokens * (0.4 + 0.6 * rng.random())))
+    if len(tokens) > target:
+        tokens = tokens[:target]
         tokens[-1] = tokens[-1] + " ..."
     return tokens

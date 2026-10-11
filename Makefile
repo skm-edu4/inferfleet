@@ -1,4 +1,4 @@
-.PHONY: install test lint run demo up down logs seed clean
+.PHONY: install test lint run demo up down logs seed bench clean
 
 VENV ?= .venv
 PY := $(VENV)/bin/python
@@ -22,6 +22,12 @@ run:
 
 demo:
 	bash scripts/demo.sh
+
+# A/B: static vs continuous batching on an identical closed-loop workload.
+# Other sweeps: see BENCHMARKS.md (load sweep + cache absorption runs).
+bench:
+	bash scripts/bench.sh ab-static static --requests 400 --concurrency 32 --pool 20000 --max-tokens 64
+	bash scripts/bench.sh ab-continuous continuous --requests 400 --concurrency 32 --pool 20000 --max-tokens 64
 
 seed:
 	$(PY) scripts/seed.py

@@ -75,7 +75,10 @@ async def test_rate_limit_enforced_per_tier(client):
 
     codes = []
     retry_after = None
-    for _ in range(25):
+    # Fixed windows can straddle the loop: worst case the first 20 requests
+    # land in bucket A and the next 21 in bucket B, so drive up to 50 tries
+    # to guarantee one full window regardless of when the test starts.
+    for _ in range(50):
         r = await client.post(
             "/v1/generate",
             json={"prompt": "hi", "max_tokens": 8},

@@ -761,6 +761,7 @@ async def admin_stats(state: GatewayState = Depends(get_state)):
         "p99_latency_s": pct(0.99),
         "recent": list(state.recent)[-10:],
         "mode": settings.mode,
+        "scheduler": settings.scheduler,
     }
 
 

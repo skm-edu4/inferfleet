@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from .db import Generation, UsageLedger, current_period
 
 MAX_ATTEMPTS = 3
+LEDGER_RETRIES = 5
 
 
 class QuotaExceeded(Exception):
@@ -18,30 +20,45 @@ class QuotaExceeded(Exception):
 
 
 def _ledger(session: Session, user_id: str) -> UsageLedger:
+    """Row-locked get-or-create for the current period's ledger row.
+
+    Concurrent *first* writes of a period race on the INSERT: SQLite has no
+    FOR UPDATE (the loser sees UNIQUE violation or SQLITE_BUSY_SNAPSHOT from a
+    stale WAL read), Postgres blocks on the unique index until the winner
+    commits. Rolling back to a fresh snapshot and retrying serializes both —
+    without it, strict-consistency billing silently loses updates under load.
+    """
     period = current_period()
-    row = session.get(UsageLedger, {"user_id": user_id, "period": period})
-    if row is None:
-        row = UsageLedger(user_id=user_id, period=period, tokens_used=0, tokens_reserved=0, requests=0)
-        session.add(row)
-        session.flush()
-    return row
+    last_exc: Exception | None = None
+    for _ in range(LEDGER_RETRIES):
+        row = session.execute(
+            select(UsageLedger)
+            .where(UsageLedger.user_id == user_id, UsageLedger.period == period)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if row is not None:
+            return row
+        try:
+            row = UsageLedger(
+                user_id=user_id, period=period, tokens_used=0, tokens_reserved=0, requests=0
+            )
+            session.add(row)
+            session.flush()
+            return row
+        except (IntegrityError, OperationalError) as exc:
+            last_exc = exc
+            session.rollback()  # winner committed (or snapshot went stale): re-read
+    raise RuntimeError(f"could not acquire usage ledger row for {user_id}") from last_exc
 
 
 def reserve(session: Session, user_id: str, quota: int, tokens: int) -> None:
     """Strict-consistency admission: row-locked check-and-reserve.
 
     Postgres takes a FOR UPDATE lock (serializable across gateway replicas);
-    SQLite serializes writers at the database level via its write lock.
+    SQLite serializes writers at the database level and the retry loop in
+    `_ledger` resolves concurrent first-writes.
     """
-    row = session.execute(
-        select(UsageLedger)
-        .where(UsageLedger.user_id == user_id, UsageLedger.period == current_period())
-        .with_for_update()
-    ).scalar_one_or_none()
-    if row is None:
-        row = UsageLedger(user_id=user_id, period=current_period(), tokens_used=0, tokens_reserved=0, requests=0)
-        session.add(row)
-        session.flush()
+    row = _ledger(session, user_id)
     if row.tokens_used + row.tokens_reserved + tokens > quota:
         raise QuotaExceeded(row.tokens_used + row.tokens_reserved, quota)
     row.tokens_reserved += tokens

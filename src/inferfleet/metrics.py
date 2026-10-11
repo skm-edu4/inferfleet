@@ -86,6 +86,18 @@ JOBS = Counter(
     ["status"],
     registry=REGISTRY,
 )
+ADMISSIONS = Counter(
+    "inferfleet_batch_admissions_total",
+    "Jobs admitted into a GPU batch (cold = empty batch, warm = joined a running batch).",
+    ["kind"],
+    registry=REGISTRY,
+)
+ADMISSION_WAIT = Histogram(
+    "inferfleet_admission_wait_seconds",
+    "Time a job waited in the queue before being admitted to a GPU batch.",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0),
+    registry=REGISTRY,
+)
 
 # ---- history / billing ----
 SETTLEMENTS = Counter(

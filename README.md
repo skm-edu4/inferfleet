@@ -1,15 +1,16 @@
 # InferFleet
 
-**A distributed LLM inference serving platform** — API gateway, dynamic GPU batching,
-two-tier response caching, tiered rate limiting, strict billing consistency, circuit-breaker
-degradation, and async history settlement.
+**A distributed LLM inference serving platform** — API gateway, continuous (iteration-level)
+GPU batching, two-tier response caching, tiered rate limiting, strict billing consistency,
+circuit-breaker degradation, and async history settlement.
 
 > Interviews want to see that you can *design* a system. This project shows you can
 > **build** it: every pattern in [`DESIGN.md`](DESIGN.md) is implemented here and
-> covered by **34 passing tests**.
+> covered by **39 passing tests** — and every performance claim is measured by a
+> reproducible benchmark harness ([`BENCHMARKS.md`](BENCHMARKS.md)):
 
 ```
-client ──► gateway(auth · rate-limit · quota · cache · breaker) ──► Redis Stream ──► GPU workers(batched)
+client ──► gateway(auth · rate-limit · quota · cache · breaker) ──► Redis Stream ──► GPU workers(continuous batching)
                  │                                                      │                    │
                  └── SSE tokens ◄──── Pub/Sub ◄─────────────────────────┴────────────────────┘
                  │
@@ -22,7 +23,7 @@ client ──► gateway(auth · rate-limit · quota · cache · breaker) ──
 
 ```bash
 make install          # creates .venv, installs deps
-make test             # 34 tests
+make test             # 39 tests
 make run              # all-in-one: gateway + worker + settlement on :8000
 ```
 
@@ -32,6 +33,13 @@ Then, in a second terminal:
 make demo             # scripted tour: health → generate → cache hit → stream → history
 open http://localhost:8000/dashboard   # live ops dashboard
 open http://localhost:8000/docs        # OpenAPI
+```
+
+Benchmarks (starts its own server, drives load, writes `results/*.json`):
+
+```bash
+make bench            # A/B: static vs continuous batching — see BENCHMARKS.md
+# headline: +34% throughput, −35% p99 latency, −41% queue wait, same workload
 ```
 
 Demo API keys (auto-seeded, deterministic):
@@ -81,7 +89,8 @@ itself a talking point: **the bus is an interface with two implementations**
 | **Gateway** | `gateway/app.py` | API design, auth (hashed keys), tiered rate limits, admission control, SSE, TTFB measurement |
 | **Billing** | `billing.py`, `db.py` | Row-locked reservations, idempotent async settlement, fail-closed on DB outage |
 | **Queue** | `bus.py` (Redis Streams + in-memory) | Pull-based load balancing, consumer groups, PEL/`XAUTOCLAIM` crash recovery, `XLEN` backpressure |
-| **Workers** | `worker/` | Dynamic batching (≤20 ms window, 16-way), lockstep token emission, restart/seq dedupe, heartbeats |
+| **Workers** | `worker/` | **Continuous batching** (vLLM-style iteration-level admission: jobs join a running batch between decode steps), lockstep token emission, restart/seq dedupe, drain-on-shutdown, heartbeats |
+| **Load testing** | `loadgen.py`, `scripts/bench.sh` | Closed- & open-loop generation, seeded Zipf workloads, TTFB/latency percentiles, `/metrics` deltas — the numbers in [BENCHMARKS.md](BENCHMARKS.md) |
 | **Cache** | `cache.py` | Exact (shared Redis KV) + semantic (cosine ≥ 0.90), temperature-gated, LRU-capped |
 | **Reliability** | `circuit.py` | Closed → open → half-open breaker, fail fast, cache-served degradation |
 | **Observability** | `metrics.py` | Prometheus: TTFB histogram, queue depth, batch size, GPU utilization, breaker state |
@@ -92,15 +101,18 @@ itself a talking point: **the bus is an interface with two implementations**
 ```
 inferfleet/
 ├── DESIGN.md                  # STAR system design document (interview artifact)
+├── BENCHMARKS.md              # measured numbers: A/B schedulers, load sweep, cache
 ├── README.md
 ├── docker-compose.yml         # gateway + 3 workers + settlement + redis + postgres
 ├── Makefile
 ├── scripts/
 │   ├── demo.sh                # scripted live demo
+│   ├── bench.sh               # benchmark runner (fresh DB per run, results/*.json)
 │   └── seed.py                # idempotent tenant seeding
 ├── src/inferfleet/
 │   ├── gateway/app.py         # API gateway: auth, quota, cache, breaker, SSE
-│   ├── worker/                # GPU worker: dynamic batching + mock engine
+│   ├── worker/                # GPU worker: continuous batching scheduler + mock engine
+│   ├── loadgen.py             # async load generator (open/closed loop, SSE TTFB)
 │   ├── history/app.py         # async settlement (history + billing)
 │   ├── bus.py                 # data plane: MemoryBus | RedisBus
 │   ├── billing.py             # reserve / settle / refund (idempotent)
@@ -109,20 +121,21 @@ inferfleet/
 │   ├── auth.py                # key auth + rate limiting
 │   ├── db.py                  # SQLAlchemy models + demo seed
 │   └── metrics.py             # Prometheus instrumentation
-└── tests/                     # 34 tests: bus unit + auth/cache + full e2e
+└── tests/                     # 39 tests: bus unit + auth/cache + scheduler + full e2e
 ```
 
 ## Test suite
 
 ```bash
 make test
-# 34 passed in ~18s
+# 39 passed in ~18s
 ```
 
 Coverage highlights: SSE token reconstruction, exact & semantic cache hits, rate-limit
 enforcement, quota 402, circuit-breaker degradation (cache still served), queue shedding,
 timeout reservation refunds, worker-crash recovery, history idempotency, broker FIFO /
-redelivery / fan-out semantics.
+redelivery / fan-out semantics, **continuous admission into running batches (and the
+static ablation that proves the switch is real)**, and an in-process load-generator smoke test.
 
 ## Design rationale
 
@@ -134,16 +147,21 @@ failure matrix, trade-off table, metrics, and anticipated interview questions �
 
 > - Designed and built **InferFleet**, a distributed LLM serving platform handling a
 >   simulated 50K RPS / 300 ms TTFB SLO: stateless API gateway, Redis Stream job queue
->   with pull-based load balancing, and GPU workers using **dynamic batching**
->   (≤20 ms windows, 16-way) for ~16× GPU throughput.
+>   with pull-based load balancing, and GPU workers using **continuous (iteration-level)
+>   batching** — new requests join a running batch between decode steps (vLLM-style),
+>   measured **+34% throughput / −35% p99 vs static batching** on an identical workload.
+> - Built a **reproducible benchmark harness** (open/closed-loop load generator, seeded
+>   workloads, Prometheus-delta reporting) and published the results: GPU capacity at
+>   92% of theoretical, graceful degradation across a 12× overload range, and an 83%
+>   cache-hit regime that cuts p50 from 6.1 s to 2.2 ms at the same offered load.
 > - Implemented **two-tier response caching** (shared exact + local semantic cosine
 >   search) and a **circuit breaker** with graceful degradation — cached answers keep
 >   serving while the fleet is down; admissions shed with `Retry-After` instead of cascading.
 > - Enforced **strict billing consistency** with row-locked quota reservations and an
 >   **idempotent async settlement pipeline** (exactly-once accounting under at-least-once
 >   delivery); history stays eventually consistent off the hot path.
-> - Instrumented end-to-end with **Prometheus** (TTFB, queue depth, batch size, GPU
->   utilization, breaker state) + live ops dashboard; **34 integration/unit tests**;
+> - Instrumented end-to-end with **Prometheus** (TTFB, queue depth, batch occupancy,
+>   admission wait, breaker state) + live ops dashboard; **39 integration/unit tests**;
 >   runs as one process for dev and **4 microservices** (gateway/workers/settlement + Redis/Postgres) via Docker Compose.
 
 ## License

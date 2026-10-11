@@ -1,0 +1,54 @@
+{
+  "config": {
+    "base_url": "http://127.0.0.1:8123",
+    "key": "ifk_live_pro00000000000000000000000000001",
+    "requests": 200,
+    "concurrency": 16,
+    "rps": 40.0,
+    "duration_s": 10.0,
+    "pool": 40,
+    "zipf": 1.2,
+    "seed": 7,
+    "stream_ratio": 0.0,
+    "max_tokens": 64,
+    "temperature": 0.2,
+    "timeout_s": 30.0,
+    "json_out": "results/cache-hot.json"
+  },
+  "summary": {
+    "sent": 400,
+    "ok": 400,
+    "errors": {},
+    "elapsed_s": 9.98,
+    "offered_rps": 40.0,
+    "achieved_rps": 40.1,
+    "latency_ms": {
+      "p50": 2.23,
+      "p90": 820.43,
+      "p99": 1240.56,
+      "max": 1275.2,
+      "mean": 153.78
+    },
+    "ttfb_ms": null,
+    "scheduling_lag_ms": {
+      "p50": 1.04,
+      "p90": 1.11,
+      "p99": 1.12,
+      "max": 1.16,
+      "mean": 1.0
+    },
+    "cached_pct": 82.8,
+    "tokens_out": 15382
+  },
+  "metrics": {
+    "admission_wait_avg_ms": 102.99,
+    "admissions": 69,
+    "batch_occupancy_avg": 6.13,
+    "batch_steps": 477,
+    "ttfb_avg_ms": 17.94,
+    "tokens_out": 2922,
+    "tokens_per_s": 292.8,
+    "cache_hits": 331,
+    "queue_shed": 0
+  }
+}
